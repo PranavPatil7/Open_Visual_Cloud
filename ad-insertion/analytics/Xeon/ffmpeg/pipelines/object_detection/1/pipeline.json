@@ -1,0 +1,34 @@
+{
+    "name": "object_detection",
+    "version": 1,
+    "type": "FFmpeg",
+    "template": [
+        "-i \"{source[uri]}\" -vf ",
+        "\"detect=model={models[object_detection][1][network]}",
+        ":model_proc=\"{models[object_detection][1][proc]}\"",
+        ":interval={parameters[inference-interval]}",
+        ":device=CPU:nireq={parameters[nireq]},",
+        "metaconvert\"",
+        " -an -y -f metapublish"
+    ],
+    "description": "Object Detection",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "inference-interval": {
+                "element": "detection",
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 4294967295,
+                "default": 1
+            },
+            "nireq": {
+                "element": "detection",
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 64,
+                "default": 2
+            }
+        }
+    }
+}

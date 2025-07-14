@@ -1,0 +1,44 @@
+language: bash
+dist: xenial
+services: docker
+
+addons:
+  apt:
+    packages:
+      - docker-ce
+    update: true
+
+env:
+  - image=ad-content/ad-decision
+  - image=account
+  - image=common
+  - image=ad-content/frontend
+  - image=ad-content/archive
+  - image=ad-insertion/frontend
+  - image=ad-insertion/ad-static
+  - image=ad-insertion/kafka2db
+  - image=ad-insertion/ad-transcode
+  - image=deployment
+  - image=cdn
+  - image=content-provider/transcode
+  - image=content-provider/frontend
+  - image=content-provider/archive
+
+before_install:
+  - docker version
+
+script:
+  - mkdir build && cd build && cmake ..
+  - cd ${image}
+  - make 
+
+matrix:
+  include:
+  # ad-insertion/analytic-service
+    - name: ad-insertion/analytics
+      env: image=ad-insertion/analytics
+      script: 
+        - mkdir build && cd build && cmake ..
+        - travis_wait 180 ${TRAVIS_BUILD_DIR}/script/travis_build.sh  ad-insertion/analytics
+      after_failure:
+        - tail --lines=5000 log_ad-insertion_analytics.log

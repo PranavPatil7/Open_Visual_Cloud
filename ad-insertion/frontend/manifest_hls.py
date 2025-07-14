@@ -1,0 +1,140 @@
+#!/usr/bin/python3
+
+import re
+import copy
+
+def _ad_template(ad_spec, name, seq, seg_segment):
+    lines=["#EXT-X-DISCONTINUITY"]
+    for i in range(int(ad_spec["duration"]/seg_segment)):
+        lines.extend([
+            "#EXTINF: " + str(seg_segment) + ",",
+            name.format(i),
+        ])
+    lines.append("#EXT-X-DISCONTINUITY")
+    return lines
+
+def _ad_time(ad_spec, seq):
+    time=0
+    for i in range(seq):
+        time=time+ad_spec["duration"]
+    return time
+
+def parse_hls(stream_cp_url, m3u8, stream_info, ad_spec, ad_segment):
+    lines=m3u8.splitlines()
+    if lines[0]!="#EXTM3U": return {}  # invalid m3u8
+    if lines[1]!="#EXT-X-VERSION:3": return {}  # format not supported
+    stream_cp_url="/".join(stream_cp_url.split("/")[:-1])
+
+    timeline=0.0
+    segsplayed=0
+    target_duration=3.0
+    media_sequence=0
+    ad_sequence=0
+    analytic_ahead=ad_spec["analytic_ahead"]
+    transcode_ahead=ad_spec["transcode_ahead"]
+    minfo={ "segs": {}, "streams": {}, "manifest": [] }
+    for i in range(len(lines)):
+        if lines[i].startswith("#EXT-X-TARGETDURATION:"):
+            m1=re.search("TARGETDURATION:([0-9.]+)",lines[i])
+            target_duration=float(m1.group(1))
+            timeline=media_sequence*target_duration
+
+        if lines[i].startswith("#EXT-X-MEDIA-SEQUENCE:"):
+            m1=re.search("SEQUENCE:([0-9]+)",lines[i])
+            media_sequence=int(m1.group(1))
+            timeline=media_sequence*target_duration
+
+        if lines[i].startswith("#EXT-X-STREAM-INF:") and i+1<len(lines):
+            m1=re.search("BANDWIDTH=([0-9]+)", lines[i])
+            m2=re.search("RESOLUTION=([0-9]+)x([0-9]+)", lines[i])
+            stream_info={}
+            if m1: stream_info["bandwidth"]=int(m1.group(1))
+            if m2: stream_info["resolution"]={"width":int(m2.group(1)),"height": int(m2.group(2))}
+            if lines[i+1].endswith(".m3u8"):
+                minfo["streams"][lines[i+1]]=stream_info
+
+        ad_interval=ad_spec["interval"][ad_sequence%len(ad_spec["interval"])]
+        ahead_analytic = ad_interval - analytic_ahead
+        if ahead_analytic < 0: ahead_analytic=0
+
+        if lines[i].startswith("#EXTINF:") and i+1<len(lines):
+            m1=re.search("EXTINF:([0-9.]+)", lines[i])
+            duration=float(m1.group(1))
+            ori_analysis_res=lines[i+1].split("p")[0]
+            dst_analysis_res=ori_analysis_res
+            seg_info={
+                "stream": stream_cp_url.split("/")[-1],
+                "bandwidth" : 0,
+                "resolution": {
+                    "width": 0,
+                    "height": 0,
+                },
+                "seg_time": timeline+_ad_time(ad_spec,ad_sequence),
+                "seg_duration": duration,
+                "codec": "avc",
+                "streaming_type": "hls",
+                "analytics":[],
+                "ad_duration": ad_spec["duration"],
+                "ad_segment": ad_segment,
+            }
+
+            if "resolution" in stream_info.keys():
+                seg_info["resolution"]=stream_info["resolution"]
+
+            if "bandwidth" in stream_info.keys():
+                seg_info["bandwidth"]=stream_info["bandwidth"]
+
+            # schedule every AD_INTERVAL interval
+            m1=re.search("(.*)_[0-9]+", lines[i+1])
+            ad_name=ad_spec["prefix"]+"/"+str(ad_sequence)+"/"+m1.group(1)
+            if segsplayed == ad_interval:
+                ad_lines=_ad_template(ad_spec,ad_name+"_{0:03d}.ts",ad_sequence,ad_segment)
+                minfo["manifest"].extend(ad_lines)
+                ad_sequence=ad_sequence+1
+                segsplayed=0
+
+            analytic_info={
+                "stream":stream_cp_url+"/"+lines[i+1].replace(ori_analysis_res, dst_analysis_res),
+                "seg_time":timeline+_ad_time(ad_spec,ad_sequence)
+            }
+
+            if segsplayed == 0 and ad_sequence == 0:
+                for _idx in range(ahead_analytic,ad_interval):
+                    if i+2*_idx+1<len(lines):
+                        temp = analytic_info.copy()
+                        temp["stream"]=stream_cp_url+"/"+lines[i+2*_idx+1].replace(ori_analysis_res, dst_analysis_res)
+                        temp["seg_time"]=timeline+_ad_time(ad_spec,ad_sequence)+duration*_idx
+                        seg_info["analytics"] +=[temp]
+                for _idx in range(ad_interval+ahead_analytic,2*ad_interval):
+                    if i+2*_idx+1<len(lines):
+                        temp = analytic_info.copy()
+                        temp["stream"]=stream_cp_url+"/"+lines[i+2*_idx+1].replace(ori_analysis_res, dst_analysis_res)
+                        temp["seg_time"]=timeline+_ad_time(ad_spec,ad_sequence+1)+duration*_idx
+                        seg_info["analytics"] +=[temp]
+            elif segsplayed == 0:
+                for _idx in range(ad_interval+ahead_analytic,2*ad_interval):
+                    if i+2*_idx+1<len(lines):
+                        temp = analytic_info.copy()
+                        temp["stream"]=stream_cp_url+"/"+lines[i+2*_idx+1].replace(ori_analysis_res, dst_analysis_res)
+                        temp["seg_time"]=timeline+_ad_time(ad_spec,ad_sequence+1)+duration*_idx
+                        seg_info["analytics"] +=[temp]
+
+            # shedule transcoding every seg
+            if segsplayed == ad_interval - transcode_ahead:
+                for k in stream_info: seg_info[k]=stream_info[k]
+                transcode_info={
+                    "stream":ad_spec["path"]+"/"+ad_name+".m3u8",
+                    "seg_time":timeline+_ad_time(ad_spec,ad_sequence)+duration*(ad_interval - segsplayed),
+                }
+                seg_info["transcode"]=[transcode_info]
+
+            # schedule analytics on every segment
+            minfo["segs"][lines[i+1]]=seg_info
+            timeline=timeline+duration
+            segsplayed=segsplayed+1
+
+        minfo["manifest"].append(lines[i])
+
+    minfo["content-type"]="text/plain"
+    minfo["manifest"]="\n".join(minfo["manifest"])
+    return minfo
